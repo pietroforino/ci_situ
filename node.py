@@ -18,7 +18,7 @@ PD_FEEDBACK_PORT = 5008          # Porta locale feedback Pure Data (UDP Grezzo)
 MY_LISTEN_PORT = 5009             # Porta su cui questo Nodo ascolta i comandi Sync dal Master
 
 PATH_BASE = "/home/commonindex/ci_situ"
-PATH_VIDEO = f"{PATH_BASE}/video_{NODE_ID.lower()}.mp4"
+PATH_VIDEO = f"/home/commonindex/video_{NODE_ID.lower()}.mp4"
 PATH_PD_PATCH = "patch_fixed.pd"
 
 # --- TIMELINE E DATI (9.500 dati = ~40 Minuti) ---
@@ -75,35 +75,53 @@ def avvia_pure_data():
     pd_process = subprocess.Popen(cmd_pd, cwd=PATH_BASE)
     time.sleep(2.0)  # Pausa per stabilizzare l'engine audio ALSA
 
-# --- GESTIONE VIDEO PLAYER (MPV via Socket IPC) ---
+# --- GESTIONE VIDEO PLAYER SU NODI (VLC + RC Socket) ---
+VLC_SOCKET_PATH = f"/tmp/vlc-socket-{NODE_ID}"
+
 def avvia_video_player():
     global mpv_process
-    print(f"[{NODE_ID}] Avvio MPV Player congelato sul frame 0...")
-    cmd_mpv = [
-        "mpv",
-        "--no-terminal",
-        "--vo=gpu",
-        "--loop-file=inf",
-        "--pause=yes",             # Parte congelato sul frame 0
-        f"--input-ipc-server=/tmp/mpv-socket-{NODE_ID}",
+    print(f"[{NODE_ID}] Avvio VLC Player in Fullscreen Pulito...")
+
+    if os.path.exists(VLC_SOCKET_PATH):
+        try:
+            os.remove(VLC_SOCKET_PATH)
+        except OSError:
+            pass
+    
+    cmd_vlc = [
+        "cvlc",
+        "-I", "dummy",                         # Disabilita l'interfaccia grafica Qt (niente barre/cornici)
+        "--no-osd",
+        "--fullscreen",
+        "--no-video-title-show",               # Nasconde il nome del file all'avvio
+        "--loop",
+        "--file-caching=5000",
+        "--live-caching=5000",
+        "--extraintf=oldrc",                  # Abilita l'interfaccia Remote Control via socket
+        f"--rc-unix={VLC_SOCKET_PATH}",
         PATH_VIDEO
     ]
-    mpv_process = subprocess.Popen(cmd_mpv)
-    time.sleep(1.0)
+    
+    mpv_process = subprocess.Popen(cmd_vlc)
+    time.sleep(1.5)
 
-def comanda_mpv(comando_str):
-    """Invia comandi in formato JSON al socket IPC di mpv"""
+    # Forza il video al frame 0 e lo mette subito in PAUSA per renderlo visibile ed evitare schermate nere
+    comanda_vlc("seek 0")
+    comanda_vlc("pause")
+
+def comanda_vlc(comando_str):
+    """Invia comandi ASCII al socket UNIX di VLC"""
     try:
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.connect(f"/tmp/mpv-socket-{NODE_ID}")
+        client.connect(VLC_SOCKET_PATH)
         client.send((comando_str + "\n").encode('utf-8'))
         client.close()
     except Exception:
         pass
 
 def play_video():
-    comanda_mpv('{"command": ["seek", 0, "absolute"]}')
-    comanda_mpv('{"command": ["set_property", "pause", false]}')
+    """Invocato quando arriva il comando GO dal Master"""
+    comanda_vlc("play")                        # Usiamo 'play' invece di 'pause' per maggiore affidabilità
 
 # --- LOGICA AUDIO ED ALGORITMI ---
 def calcola_traccia_curata(gravita_norm, presenza, num_persone):
@@ -303,6 +321,11 @@ def main():
             pd_process.terminate()
         if mpv_process:
             mpv_process.terminate()
+        
+        # Pulizia socket file di VLC
+        if os.path.exists(VLC_SOCKET_PATH):
+            os.remove(VLC_SOCKET_PATH)
+            
         print(f"[{NODE_ID}] Arrestato pulito.")
 
 if __name__ == "__main__":
