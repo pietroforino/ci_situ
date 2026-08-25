@@ -4,6 +4,7 @@ import random
 import threading
 import socket
 import subprocess
+import os
 from pythonosc import udp_client, osc_server
 from pythonosc.dispatcher import Dispatcher
 
@@ -16,7 +17,9 @@ MASTER_PORT = 5007                # Porta del Master dove inviare le risposte RE
 PD_FEEDBACK_PORT = 5008          # Porta locale feedback Pure Data (UDP Grezzo)
 MY_LISTEN_PORT = 5009             # Porta su cui questo Nodo ascolta i comandi Sync dal Master
 
-PATH_VIDEO = f"/home/commonindex/ci_situ/video_{NODE_ID.lower()}.mp4"
+PATH_BASE = "/home/commonindex/ci_situ"
+PATH_VIDEO = f"{PATH_BASE}/video_{NODE_ID.lower()}.mp4"
+PATH_PD_PATCH = "patch_fixed.pd"
 
 # --- TIMELINE E DATI (9.500 dati = ~40 Minuti) ---
 DURATA_CICLO_SEC = 2400.0         # 40 minuti di ciclo
@@ -31,10 +34,11 @@ DIMENSIONE_MEMORIA = 35
 pd_client = udp_client.SimpleUDPClient("127.0.0.1", PD_CLIENT_PORT)
 master_client = udp_client.SimpleUDPClient(MASTER_IP, MASTER_PORT)
 
-# Stato interno e Sync
+# Processi e Stato interno
 stato_nodo = "INIT"               # INIT, READY, RUNNING
 tempo_inizio_ciclo = 0.0
 mpv_process = None
+pd_process = None
 
 context_master = {
     "gravita": 1.0,
@@ -53,10 +57,29 @@ presenza_smooth = 0.0
 movimento_smooth = 0.0
 ALPHA = 0.15
 
+# --- GESTIONE PURE DATA ---
+def avvia_pure_data():
+    global pd_process
+    print(f"[{NODE_ID}] Avvio Pure Data in background...")
+    cmd_pd = [
+        "pd",
+        "-nogui",
+        "-alsa",
+        "-noadc",
+        "-audiooutdev", "3",
+        "-audiobuf", "50",
+        "-r", "44100",
+        "-send", "pd dsp 1",
+        PATH_PD_PATCH
+    ]
+    pd_process = subprocess.Popen(cmd_pd, cwd=PATH_BASE)
+    time.sleep(2.0)  # Pausa per stabilizzare l'engine audio ALSA
+
 # --- GESTIONE VIDEO PLAYER (MPV via Socket IPC) ---
 def avvia_video_player():
     global mpv_process
-    cmd = [
+    print(f"[{NODE_ID}] Avvio MPV Player congelato sul frame 0...")
+    cmd_mpv = [
         "mpv",
         "--no-terminal",
         "--vo=gpu",
@@ -65,7 +88,7 @@ def avvia_video_player():
         f"--input-ipc-server=/tmp/mpv-socket-{NODE_ID}",
         PATH_VIDEO
     ]
-    mpv_process = subprocess.Popen(cmd)
+    mpv_process = subprocess.Popen(cmd_mpv)
     time.sleep(1.0)
 
 def comanda_mpv(comando_str):
@@ -175,12 +198,14 @@ def simula_lettura_radar(t_sim):
 def main():
     global presenza_smooth, movimento_smooth, ultimo_stato_fuoco, audio_in_riproduzione
     global tempo_inizio_audio, tempo_fine_audio, cooldown_attuale, STORICO_AUDIO, stato_nodo
+    global pd_process, mpv_process
 
-    # Thread di ascolto
+    # 1. Thread di ascolto OSC/UDP
     threading.Thread(target=avvia_server_osc_master, daemon=True).start()
     threading.Thread(target=ascolta_feedback_pd_grezzo, daemon=True).start()
 
-    print(f"[{NODE_ID}] Inizializzazione hardware e video mpv...")
+    # 2. Avvio dei processi di backend (Pure Data + MPV)
+    avvia_pure_data()
     avvia_video_player()
     
     stato_nodo = "READY"
@@ -209,7 +234,7 @@ def main():
             presenza_smooth = (ALPHA * presenza_grezza) + ((1.0 - ALPHA) * presenza_smooth)
             movimento_smooth = (ALPHA * movimento_grezzo) + ((1.0 - ALPHA) * movimento_smooth)
 
-            # 1. Modulazioni continue verso Pure Data (20Hz)
+            # Modulazioni continue verso Pure Data (20Hz)
             pd_client.send_message("/pd/presenza", float(round(presenza_smooth, 3)))
             pd_client.send_message("/pd/movimento", float(round(movimento_smooth, 3)))
             pd_client.send_message("/pd/gravita", float(round(context_master["gravita_norm"], 3)))
@@ -227,7 +252,7 @@ def main():
             if not audio_in_riproduzione and tempo_fine_audio > 0:
                 cooldown_attuale = calcola_cooldown(context_master["gravita_norm"], len(targets_attivi))
 
-            # 2. Trigger d'evento gestito a feedback + cooldown
+            # Trigger d'evento gestito a feedback + cooldown
             if fuoco_attuale == 1 and not audio_in_riproduzione and (tempo_trascorso_dalla_fine >= cooldown_attuale):
                 traccia_scelta = calcola_traccia_curata(
                     context_master["gravita_norm"], 
@@ -273,9 +298,12 @@ def main():
             time.sleep(0.05)
 
     except KeyboardInterrupt:
+        print(f"\n[{NODE_ID}] Arresto in corso...")
+        if pd_process:
+            pd_process.terminate()
         if mpv_process:
             mpv_process.terminate()
-        print(f"\n[{NODE_ID}] Arresto.")
+        print(f"[{NODE_ID}] Arrestato pulito.")
 
 if __name__ == "__main__":
     main()
