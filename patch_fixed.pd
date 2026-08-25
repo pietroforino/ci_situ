@@ -53,8 +53,8 @@
 #X msg 980 110 open audio/fuoco_spento_master.wav 1 \, 1;
 #X obj 780 145 readsf~ 2;
 #X obj 980 145 readsf~ 2;
-#X obj 48 630 *~ 0.25;
-#X obj 124 623 *~ 0.25;
+#X obj 48 630 *~ 0.3;
+#X obj 124 623 *~ 0.3;
 #X obj 980 350 *~;
 #X obj 1010 350 *~;
 #X obj 810 350 *~;
