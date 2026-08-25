@@ -49,8 +49,8 @@
 #X obj 860 230 == 0;
 #X msg 860 270 \$1 500;
 #X obj 860 300 line~;
-#X msg 780 110 open audio-bimbo/fuoco_acceso_master.wav 1 \, 1;
-#X msg 980 110 open audio-bimbo/fuoco_spento_master.wav 1 \, 1;
+#X msg 780 110 open audio/fuoco_acceso_master.wav 1 \, 1;
+#X msg 980 110 open audio/fuoco_spento_master.wav 1 \, 1;
 #X obj 780 145 readsf~ 2;
 #X obj 980 145 readsf~ 2;
 #X obj 780 350 *~;
