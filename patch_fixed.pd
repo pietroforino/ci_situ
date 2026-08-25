@@ -57,8 +57,8 @@
 #X obj 810 350 *~;
 #X obj 980 350 *~;
 #X obj 1010 350 *~;
-#X obj 48 630 *~ 2;
-#X obj 150 630 *~ 2;
+#X obj 48 630 *~ ;
+#X obj 150 630 *~ ;
 #X connect 0 0 1 0;
 #X connect 1 0 2 0;
 #X connect 2 0 3 0;
