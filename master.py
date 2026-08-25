@@ -6,7 +6,7 @@ from pythonosc import udp_client, osc_server
 from pythonosc.dispatcher import Dispatcher
 
 # --- CONFIGURAZIONE NETWORK E NODI ---
-IP_NODI = ["192.168.1.101", "192.168.1.102", "192.168.1.103"]  # IP reali dei Nodi
+IP_NODI = ["192.168.1.105", "192.168.1.100", "192.168.1.101"]  # IP reali dei Nodi
 NODO_LISTEN_PORT = 5009       # Porta su cui i Nodi ascoltano i comandi dal Master
 MY_MASTER_PORT = 5007         # Porta su cui il Master ascolta i messaggi dei Nodi
 
