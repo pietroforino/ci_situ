@@ -121,7 +121,7 @@ def comanda_vlc(comando_str):
 
 def play_video():
     """Invocato quando arriva il comando GO dal Master"""
-    comanda_vlc("play")                        # Usiamo 'play' invece di 'pause' per maggiore affidabilità
+    comanda_vlc("play")
 
 # --- LOGICA AUDIO ED ALGORITMI ---
 def calcola_traccia_curata(gravita_norm, presenza, num_persone):
@@ -159,7 +159,6 @@ def callback_master_go(address, *args):
     print(f"\n[{NODE_ID}] >>> GO RICEVUTO DAL MASTER! Avvio sincronizzato! <<<")
     play_video()
     tempo_inizio_ciclo = time.time()
-    stato_nodo = "RUNNING"
 
 def callback_master_fuoco(address, *args):
     if args:
@@ -226,7 +225,7 @@ def main():
     avvia_pure_data()
     avvia_video_player()
     
-    stato_nodo = "READY"
+    stato_nodo = "RUNNING"
     print(f"[{NODE_ID}] Ascolto Master su porta {MY_LISTEN_PORT} - In attesa del PING/GO...")
 
     t_sim = 0.0
@@ -234,9 +233,9 @@ def main():
     try:
         while True:
             # Se siamo in attesa del GO dal Master, non elaboriamo audio/radar
-            if stato_nodo != "RUNNING":
-                time.sleep(0.05)
-                continue
+            # if stato_nodo != "RUNNING":
+            #     time.sleep(0.05)
+            #     continue
 
             targets_attivi = simula_lettura_radar(t_sim)
 
@@ -263,6 +262,9 @@ def main():
                 audio_in_riproduzione = False
                 tempo_fine_audio = time.time()
                 cooldown_attuale = calcola_cooldown(context_master["gravita_norm"], len(targets_attivi))
+
+            t_sim += 0.1
+            time.sleep(0.1)
 
             fuoco_attuale = context_master["fuoco"]
             tempo_trascorso_dalla_fine = time.time() - tempo_fine_audio
@@ -310,7 +312,7 @@ def main():
 
             # Controllo fine ciclo locale in attesa del nuovo GO dal Master
             if t_corrente >= DURATA_CICLO_SEC:
-                stato_nodo = "READY"
+                tempo_inizio_ciclo = time.time()
 
             t_sim += 0.05
             time.sleep(0.05)
