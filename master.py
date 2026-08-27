@@ -9,6 +9,7 @@ from pythonosc import udp_client, osc_server
 from pythonosc.dispatcher import Dispatcher
 
 # --- WATCHDOG SYSTEMD (sd_notify) ---
+# Richiede: pip install sdnotify
 try:
     import sdnotify
     NOTIFIER = sdnotify.SystemdNotifier()
@@ -25,7 +26,7 @@ def sd_notify(msg):
         except Exception:
             pass
 
-# --- LOGGING ---
+# --- LOGGING (sostituisce i print, sempre flush-ato, niente più 'blob data') ---
 logging.basicConfig(
     level=logging.INFO,
     format="[MASTER] %(asctime)s | %(message)s",
@@ -35,7 +36,7 @@ logging.basicConfig(
 log = logging.getLogger("master")
 
 # --- CONFIGURAZIONE NETWORK E NODI ---
-IP_NODI = ["192.168.1.105", "192.168.1.100", "192.168.1.101"] 
+IP_NODI = ["192.168.1.105", "192.168.1.100", "192.168.1.101"]  # IP reali dei Nodi
 NODO_LISTEN_PORT = 5009       # Porta su cui i Nodi ascoltano i comandi dal Master
 MY_MASTER_PORT = 5007         # Porta su cui il Master ascolta i messaggi dei Nodi
 
@@ -53,9 +54,9 @@ DURATA_CICLO_SEC = 2400.0     # 40 minuti per ciclo completo
 TOTALE_DATI = 9500
 
 # --- TIMEOUT E INTERVALLI ---
-HANDSHAKE_TIMEOUT_SEC = 120.0   
+HANDSHAKE_TIMEOUT_SEC = 30.0   # Tempo massimo di attesa nodi prima di partire comunque
 PING_BACKGROUND_INTERVALLO_SEC = 5.0
-WATCHDOG_INTERNO_TIMEOUT_SEC = 120.0 
+WATCHDOG_INTERNO_TIMEOUT_SEC = 10.0  # Se il loop principale non "respira" entro questo tempo -> restart forzato
 
 nodi_pronti = set()
 lock_nodi_pronti = threading.Lock()
@@ -182,6 +183,14 @@ def attendi_nodi_o_timeout(timeout_sec=HANDSHAKE_TIMEOUT_SEC):
             log.warning(f"TIMEOUT handshake dopo {timeout_sec}s. Procedo comunque. "
                         f"Nodi mancanti (se identificabili): {mancanti or '??'}")
             return
+
+        # FIX: invio effettivo del ping ai nodi (era stato erroneamente omesso)
+        for client in clients_nodi:
+            try:
+                client.send_message("/master/ping", "PING")
+            except Exception as e:
+                log.warning(f"Errore ping verso {client._address}: {e}")
+
         sd_notify("WATCHDOG=1")  # evita che systemd uccida il processo durante l'attesa
         time.sleep(1.0)
 
