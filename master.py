@@ -201,10 +201,6 @@ def simula_dati_timeline(indice):
     return gravita, gravita_norm, fuoco
 
 def invia_dati_nodi(gravita, gravita_norm, fuoco):
-    """Invia le variabili a ciascun nodo. Il broadcast avviene SEMPRE verso
-    tutti gli IP configurati, indipendentemente dallo stato 'pronto': se un
-    nodo torna online, ricomincia a ricevere dati dal ciclo successivo senza
-    bisogno di alcuna azione da parte del Master."""
     for client in clients_nodi:
         try:
             client.send_message("/master/gravita", float(gravita))
@@ -222,18 +218,19 @@ def main():
     log.info("Inizializzazione video e sistema...")
     avvia_video_master()
 
-    # Segnala a systemd che l'avvio è completo (necessario con Type=notify),
-    # PRIMA dell'handshake, così l'attesa nodi non fa scattare TimeoutStartSec.
     sd_notify("READY=1")
     sd_notify("STATUS=Inizializzato, in attesa handshake nodi...")
 
     log.info("In attesa che i Nodi si connettano e rispondano 'READY' (con timeout)...")
     attendi_nodi_o_timeout()
 
-    # Ping continuo in background, anche dopo l'handshake iniziale
     threading.Thread(target=thread_ping_background, daemon=True).start()
 
     log.info("Avvio video Master e invio comando GO ai Nodi...")
+
+    log.info("Attesa di 2 secondi per l'assestamento grafico/audio dei nodi...")
+    time.sleep(2.0)
+
     play_video_master()
     for client in clients_nodi:
         try:
@@ -253,22 +250,31 @@ def main():
 
         t_attuale = time.time() - tempo_inizio_ciclo
 
-        indice_calcolato = int((t_attuale / DURATA_CICLO_SEC) * TOTALE_DATI)
-        indice_dato = min(indice_calcolato % TOTALE_DATI, TOTALE_DATI - 1)
-
+        # GESTIONE RIAVVIO CICLO
         if t_attuale >= DURATA_CICLO_SEC:
-            log.info("Ciclo completato. Riavvio sequenza...")
+            log.info("Ciclo completato. Riavvio sequenza e invio GO ai Nodi...")
             tempo_inizio_ciclo = time.time()
             t_attuale = 0.0
             play_video_master()
+            
+            # FORZA IL RIAVVIO SUI NODI
+            for client in clients_nodi:
+                try:
+                    client.send_message("/master/go", "START")
+                except Exception as e:
+                    log.warning(f"Errore invio GO di riavvio a {client._address}: {e}")
+
+        # Calcolo dell'indice sincronizzato
+        indice_calcolato = int((t_attuale / DURATA_CICLO_SEC) * TOTALE_DATI)
+        indice_dato = min(max(0, indice_calcolato), TOTALE_DATI - 1)
 
         gravita, gravita_norm, fuoco = simula_dati_timeline(indice_dato)
         invia_dati_nodi(gravita, gravita_norm, fuoco)
 
-        # Controllo periodico che mpv non sia morto sotto silenzio
+        # Controllo periodico MPV
         if t_attuale - ultimo_check_mpv >= 5.0:
             if not mpv_e_vivo():
-                log.critical("Il processo MPV non è più attivo! Uscita forzata per far ripartire il servizio.")
+                log.critical("Il processo MPV non è più attivo! Uscita forzata.")
                 os._exit(1)
             ultimo_check_mpv = t_attuale
 
