@@ -5,6 +5,7 @@ import threading
 import socket
 import subprocess
 import os
+import re
 from pythonosc import udp_client, osc_server
 from pythonosc.dispatcher import Dispatcher
 
@@ -14,14 +15,17 @@ MASTER_IP = "192.168.1.104"       # IP RPi 5 Master
 
 PD_CLIENT_PORT = 5005             # Porta locale su cui Pure Data ascolta
 MASTER_PORT = 5007                # Porta del Master dove inviare le risposte READY
-PD_FEEDBACK_PORT = 5008          # Porta locale feedback Pure Data (UDP Grezzo)
+PD_FEEDBACK_PORT = 5008           # Porta locale feedback Pure Data (UDP Grezzo)
 MY_LISTEN_PORT = 5009             # Porta su cui questo Nodo ascolta i comandi Sync dal Master
 
 PATH_BASE = "/home/commonindex/ci_situ"
 PATH_VIDEO = f"/home/commonindex/video_{NODE_ID.lower()}.mp4"
 PATH_PD_PATCH = "patch_fixed.pd"
 
-# --- TIMELINE E DATI (9.500 dati = ~40 Minuti) ---
+# Socket UNIX IPC per MPV
+MPV_SOCKET_PATH = f"/tmp/mpv-socket-{NODE_ID.lower()}"
+
+# --- TIMELINE E DATI ---
 DURATA_CICLO_SEC = 2400.0         # 40 minuti di ciclo
 TOTALE_DATI = 9500
 
@@ -57,71 +61,104 @@ presenza_smooth = 0.0
 movimento_smooth = 0.0
 ALPHA = 0.15
 
+# --- IDENTIFICAZIONE DINAMICA AUDIO ALSA ---
+def trova_dispositivo_audio():
+    """
+    Scansiona i dispositivi di riproduzione ALSA con 'aplay -l' 
+    e trova l'indice numerico della scheda non-HDMI (Headphones, Analog, USB, bcm2835 Headphones).
+    Ritorna il numero di dispositivo da passare a Pure Data, oppure '1' come fallback.
+    """
+    try:
+        output = subprocess.check_output(["aplay", "-l"], text=True)
+        dev_index = 1  # Fallback di sicurezza
+        
+        for line in output.splitlines():
+            # Cerca righe del tipo: card 0: Headphones [bcm2835 Headphones]...
+            match = re.search(r"card\s+(\d+):\s*([\w\s_-]+)", line)
+            if match:
+                card_num = match.group(1)
+                card_name = match.group(2).lower()
+                
+                # Esclude le schede audio correlate ad HDMI
+                if "hdmi" not in card_name:
+                    log_msg = f"[{NODE_ID}] Scheda audio analogica trovata: Card {card_num} ({card_name})"
+                    print(log_msg)
+                    return card_num
+                    
+        return str(dev_index)
+    except Exception as e:
+        print(f"[{NODE_ID}] Avviso: Impossibile rilevare dispositivi audio dinamici ({e}), uso fallback 1")
+        return "1"
+
 # --- GESTIONE PURE DATA ---
 def avvia_pure_data():
     global pd_process
-    print(f"[{NODE_ID}] Avvio Pure Data in background...")
+    audio_dev = trova_dispositivo_audio()
+    print(f"[{NODE_ID}] Avvio Pure Data con dispositivo audio ALSA #{audio_dev}...")
+    
     cmd_pd = [
         "pd",
         "-nogui",
         "-alsa",
         "-noadc",
-        "-audiooutdev", "3",
+        "-audiooutdev", audio_dev,
         "-audiobuf", "50",
         "-r", "44100",
         "-send", "pd dsp 1",
         PATH_PD_PATCH
     ]
     pd_process = subprocess.Popen(cmd_pd, cwd=PATH_BASE)
-    time.sleep(2.0)  # Pausa per stabilizzare l'engine audio ALSA
+    time.sleep(2.0)
 
-# --- GESTIONE VIDEO PLAYER SU NODI (VLC + RC Socket) ---
-VLC_SOCKET_PATH = f"/tmp/vlc-socket-{NODE_ID}"
-
+# --- GESTIONE VIDEO PLAYER SU NODI (MPV IPC Socket) ---
 def avvia_video_player():
     global mpv_process
-    print(f"[{NODE_ID}] Avvio VLC Player in Fullscreen Pulito...")
+    print(f"[{NODE_ID}] Avvio MPV Player in Fullscreen (Pausa su Frame 0)...")
 
-    if os.path.exists(VLC_SOCKET_PATH):
+    if os.path.exists(MPV_SOCKET_PATH):
         try:
-            os.remove(VLC_SOCKET_PATH)
+            os.remove(MPV_SOCKET_PATH)
         except OSError:
             pass
     
-    cmd_vlc = [
-        "cvlc",
-        "-I", "dummy",                         # Disabilita l'interfaccia grafica Qt (niente barre/cornici)
-        "--no-osd",
+    cmd_mpv = [
+        "mpv",
         "--fullscreen",
-        "--no-video-title-show",               # Nasconde il nome del file all'avvio
-        "--loop",
-        "--file-caching=5000",
-        "--live-caching=5000",
-        "--extraintf=oldrc",                  # Abilita l'interfaccia Remote Control via socket
-        f"--rc-unix={VLC_SOCKET_PATH}",
+        "--ontop",
+        "--no-osd-bar",
+        "--vo=gpu",
+        "--gpu-api=vulkan",
+        "--hwdec=drm-copy",
+        "--loop-file=inf",
+        "--pause=yes",
+        f"--input-ipc-server={MPV_SOCKET_PATH}",
+        "--no-terminal",
+        "--really-quiet",
         PATH_VIDEO
     ]
     
-    mpv_process = subprocess.Popen(cmd_vlc)
-    time.sleep(1.5)
+    mpv_process = subprocess.Popen(
+        cmd_mpv,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+    time.sleep(1.0)
 
-    # Forza il video al frame 0 e lo mette subito in PAUSA per renderlo visibile ed evitare schermate nere
-    comanda_vlc("seek 0")
-    comanda_vlc("pause")
-
-def comanda_vlc(comando_str):
-    """Invia comandi ASCII al socket UNIX di VLC"""
+def comanda_mpv(comando_str):
+    """Invia comandi JSON al socket IPC UNIX di MPV"""
     try:
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.connect(VLC_SOCKET_PATH)
+        client.settimeout(0.5)
+        client.connect(MPV_SOCKET_PATH)
         client.send((comando_str + "\n").encode('utf-8'))
         client.close()
     except Exception:
         pass
 
 def play_video():
-    """Invocato quando arriva il comando GO dal Master"""
-    comanda_vlc("play")
+    """Eseguito all'arrivo del comando GO dal Master"""
+    comanda_mpv('{"command": ["seek", 0, "absolute"]}')
+    comanda_mpv('{"command": ["set_property", "pause", false]}')
 
 # --- LOGICA AUDIO ED ALGORITMI ---
 def calcola_traccia_curata(gravita_norm, presenza, num_persone):
@@ -150,15 +187,20 @@ def calcola_cooldown(gravita_norm, num_persone):
 # --- RICEZIONE OSC (MASTER) ---
 def callback_master_ping(address, *args):
     global stato_nodo
-    if stato_nodo in ["INIT", "READY"]:
-        master_client.send_message("/node/ready", NODE_ID)
+    # Risponde in continuo al PING per far sapere al Master che la scheda è attiva
+    master_client.send_message("/node/ready", NODE_ID)
+    if stato_nodo == "INIT":
         stato_nodo = "READY"
 
 def callback_master_go(address, *args):
     global stato_nodo, tempo_inizio_ciclo
-    print(f"\n[{NODE_ID}] >>> GO RICEVUTO DAL MASTER! Avvio sincronizzato! <<<")
+    print(f"\n[{NODE_ID}] >>> GO RICEVUTO DAL MASTER! Avvio sincronizzato video! <<<")
+    
+    # Riavvio video istantaneo da inizio frame
     play_video()
+    
     tempo_inizio_ciclo = time.time()
+    stato_nodo = "RUNNING"
 
 def callback_master_fuoco(address, *args):
     if args:
@@ -180,6 +222,7 @@ def avvia_server_osc_master():
     dispatcher.map("/master/gravita", callback_master_gravita)
     dispatcher.map("/master/gravita_norm", callback_master_gravita_norm)
     
+    osc_server.ThreadingOSCUDPServer.allow_reuse_address = True
     server = osc_server.ThreadingOSCUDPServer(("0.0.0.0", MY_LISTEN_PORT), dispatcher)
     server.serve_forever()
 
@@ -215,7 +258,7 @@ def simula_lettura_radar(t_sim):
 def main():
     global presenza_smooth, movimento_smooth, ultimo_stato_fuoco, audio_in_riproduzione
     global tempo_inizio_audio, tempo_fine_audio, cooldown_attuale, STORICO_AUDIO, stato_nodo
-    global pd_process, mpv_process
+    global pd_process, mpv_process, tempo_inizio_ciclo
 
     # 1. Thread di ascolto OSC/UDP
     threading.Thread(target=avvia_server_osc_master, daemon=True).start()
@@ -225,17 +268,16 @@ def main():
     avvia_pure_data()
     avvia_video_player()
     
-    stato_nodo = "RUNNING"
-    print(f"[{NODE_ID}] Ascolto Master su porta {MY_LISTEN_PORT} - In attesa del PING/GO...")
+    print(f"[{NODE_ID}] Backend pronti. In attesa del PING/GO dal Master...")
 
     t_sim = 0.0
 
     try:
         while True:
-            # Se siamo in attesa del GO dal Master, non elaboriamo audio/radar
-            # if stato_nodo != "RUNNING":
-            #     time.sleep(0.05)
-            #     continue
+            # Controllo attesa Handshake dal Master
+            if stato_nodo != "RUNNING":
+                time.sleep(0.1)
+                continue
 
             targets_attivi = simula_lettura_radar(t_sim)
 
@@ -262,9 +304,6 @@ def main():
                 audio_in_riproduzione = False
                 tempo_fine_audio = time.time()
                 cooldown_attuale = calcola_cooldown(context_master["gravita_norm"], len(targets_attivi))
-
-            t_sim += 0.1
-            time.sleep(0.1)
 
             fuoco_attuale = context_master["fuoco"]
             tempo_trascorso_dalla_fine = time.time() - tempo_fine_audio
@@ -310,10 +349,6 @@ def main():
                 end="\r"
             )
 
-            # Controllo fine ciclo locale in attesa del nuovo GO dal Master
-            if t_corrente >= DURATA_CICLO_SEC:
-                tempo_inizio_ciclo = time.time()
-
             t_sim += 0.05
             time.sleep(0.05)
 
@@ -324,9 +359,11 @@ def main():
         if mpv_process:
             mpv_process.terminate()
         
-        # Pulizia socket file di VLC
-        if os.path.exists(VLC_SOCKET_PATH):
-            os.remove(VLC_SOCKET_PATH)
+        if os.path.exists(MPV_SOCKET_PATH):
+            try:
+                os.remove(MPV_SOCKET_PATH)
+            except OSError:
+                pass
             
         print(f"[{NODE_ID}] Arrestato pulito.")
 
