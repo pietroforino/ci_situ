@@ -110,55 +110,60 @@ def avvia_pure_data():
     pd_process = subprocess.Popen(cmd_pd, cwd=PATH_BASE)
     time.sleep(2.0)
 
-# --- GESTIONE VIDEO PLAYER SU NODI (MPV IPC Socket) ---
-def avvia_video_player():
-    global mpv_process
-    print(f"[{NODE_ID}] Avvio MPV Player in Fullscreen (Pausa su Frame 0)...")
+# --- GESTIONE VIDEO PLAYER SU NODI (VLC + RC Socket) ---
+VLC_SOCKET_PATH = f"/tmp/vlc-socket-{NODE_ID.lower()}"
 
-    if os.path.exists(MPV_SOCKET_PATH):
-        try:
-            os.remove(MPV_SOCKET_PATH)
-        except OSError:
-            pass
-    
-    cmd_mpv = [
-        "mpv",
-        "--fullscreen",
-        "--ontop",
-        "--no-osd-bar",
-        "--vo=gpu",
-        "--gpu-api=vulkan",
-        "--hwdec=drm-copy",
-        "--loop-file=inf",
-        "--pause=yes",
-        f"--input-ipc-server={MPV_SOCKET_PATH}",
-        "--no-terminal",
-        "--really-quiet",
-        PATH_VIDEO
-    ]
-    
-    mpv_process = subprocess.Popen(
-        cmd_mpv,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    )
-    time.sleep(1.0)
-
-def comanda_mpv(comando_str):
-    """Invia comandi JSON al socket IPC UNIX di MPV"""
+def comanda_vlc(comando_str):
+    """Invia comandi ASCII al socket UNIX di VLC"""
     try:
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.settimeout(0.5)
-        client.connect(MPV_SOCKET_PATH)
+        client.connect(VLC_SOCKET_PATH)
         client.send((comando_str + "\n").encode('utf-8'))
         client.close()
     except Exception:
         pass
 
+def avvia_video_player():
+    global mpv_process  # (usiamo la variabile di processo esistente)
+    print(f"[{NODE_ID}] Avvio VLC Player in Fullscreen (RC Socket)...")
+
+    if os.path.exists(VLC_SOCKET_PATH):
+        try:
+            os.remove(VLC_SOCKET_PATH)
+        except OSError:
+            pass
+    
+    cmd_vlc = [
+        "cvlc",
+        "-I", "dummy",                         # Disabilita l'interfaccia grafica Qt
+        "--no-osd",
+        "--fullscreen",
+        "--no-video-title-show",               # Nasconde il nome del file all'avvio
+        "--loop",
+        "--file-caching=5000",
+        "--live-caching=5000",
+        "--extraintf=oldrc",                   # Abilita l'interfaccia Remote Control via socket UNIX
+        f"--rc-unix={VLC_SOCKET_PATH}",
+        PATH_VIDEO
+    ]
+    
+    mpv_process = subprocess.Popen(
+        cmd_vlc,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+    time.sleep(1.5)
+
+    # Inizializza VLC al frame 0 e lo blocca in pausa
+    comanda_vlc("seek 0")
+    comanda_vlc("pause")
+
 def play_video():
-    """Eseguito all'arrivo del comando GO dal Master"""
-    comanda_mpv('{"command": ["seek", 0, "absolute"]}')
-    comanda_mpv('{"command": ["set_property", "pause", false]}')
+    """Invocato quando arriva il comando GO dal Master (senza time.sleep bloccanti)"""
+    # Va a 0 e toglie la pausa ISTANTANEAMENTE
+    comanda_vlc("seek 0")
+    comanda_vlc("pause")
 
 # --- LOGICA AUDIO ED ALGORITMI ---
 def calcola_traccia_curata(gravita_norm, presenza, num_persone):
