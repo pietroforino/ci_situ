@@ -101,7 +101,7 @@ def avvia_pure_data():
         "-nogui",
         "-alsa",
         "-noadc",
-        "-audiooutdev", audio_dev,
+        "-audiooutdev", audio_dev + 1,
         "-audiobuf", "50",
         "-r", "44100",
         "-send", "pd dsp 1",
