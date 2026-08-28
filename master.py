@@ -5,6 +5,7 @@ import socket
 import threading
 import logging
 import sys
+import json
 from pythonosc import udp_client, osc_server
 from pythonosc.dispatcher import Dispatcher
 
@@ -87,20 +88,23 @@ def avvia_video_master():
 def mpv_e_vivo():
     return video_master_process is not None and video_master_process.poll() is None
 
-def comanda_mpv_master(comando_str):
+def comanda_mpv_master(comando_dict):
+    """Invia un comando a mpv tramite socket UNIX usando JSON nativo"""
     try:
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.settimeout(0.5)
+        client.settimeout(1.0)
         client.connect(MASTER_MPV_SOCKET)
-        client.send((comando_str + "\n").encode('utf-8'))
+        payload = (json.dumps(comando_dict) + "\n").encode('utf-8')
+        client.sendall(payload)  # Garantisce l'invio completo
         client.close()
-    except Exception:
-        pass
+    except Exception as e:
+        log.error(f"Errore comunicazione MPV: {e}")
 
 def restart_video_master():
     """Riavvia istantaneamente la riproduzione da 0"""
-    comanda_mpv_master('{"command": ["seek", 0, "absolute"]}')
-    comanda_mpv_master('{"command": ["set_property", "pause", false]}')
+    comanda_mpv_master({"command": ["seek", 0, "absolute"]})
+    time.sleep(0.05)
+    comanda_mpv_master({"command": ["set_property", "pause", False]})
 
 # --- RICEZIONE OSC ---
 def callback_node_ready(address, *args):
