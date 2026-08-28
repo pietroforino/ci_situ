@@ -65,27 +65,27 @@ ALPHA = 0.15
 def trova_dispositivo_audio():
     """
     Scansiona i dispositivi di riproduzione ALSA con 'aplay -l' 
-    e trova l'indice numerico della scheda non-HDMI (Headphones, Analog, USB, bcm2835 Headphones).
-    Ritorna il numero di dispositivo da passare a Pure Data, oppure '1' come fallback.
+    e trova l'indice numerico della scheda non-HDMI.
+    Mappa l'indice ALSA (0-indexed) a Pure Data (1-indexed) sommando +1.
     """
     try:
         output = subprocess.check_output(["aplay", "-l"], text=True)
-        dev_index = 1  # Fallback di sicurezza
         
         for line in output.splitlines():
             # Cerca righe del tipo: card 0: Headphones [bcm2835 Headphones]...
             match = re.search(r"card\s+(\d+):\s*([\w\s_-]+)", line)
             if match:
-                card_num = match.group(1)
+                card_num = int(match.group(1))
                 card_name = match.group(2).lower()
                 
                 # Esclude le schede audio correlate ad HDMI
                 if "hdmi" not in card_name:
-                    log_msg = f"[{NODE_ID}] Scheda audio analogica trovata: Card {card_num} ({card_name})"
+                    pd_dev_index = str(card_num + 1)
+                    log_msg = f"[{NODE_ID}] Scheda ALSA Card {card_num} ({card_name}) -> Mappata su Pure Data dev #{pd_dev_index}"
                     print(log_msg)
-                    return card_num
+                    return pd_dev_index
                     
-        return str(dev_index)
+        return "1"  # Fallback: primo dispositivo in PD
     except Exception as e:
         print(f"[{NODE_ID}] Avviso: Impossibile rilevare dispositivi audio dinamici ({e}), uso fallback 1")
         return "1"
@@ -101,7 +101,7 @@ def avvia_pure_data():
         "-nogui",
         "-alsa",
         "-noadc",
-        "-audiooutdev", audio_dev + 1,
+        "-audiooutdev", audio_dev,
         "-audiobuf", "50",
         "-r", "44100",
         "-send", "pd dsp 1",
